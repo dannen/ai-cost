@@ -68,9 +68,30 @@ python cheapest.py --provider runpod        # single provider
 python cheapest.py --provider linode
 python cheapest.py --provider digitalocean
 python cheapest.py --spot                   # RunPod: rank by spot price
+python cheapest.py --min-vram 48            # only GPUs with >= 48 GB VRAM per GPU
+python cheapest.py --min-vram 80 --top 10
 ```
 
 Providers with no configured token are skipped with a note rather than erroring.
+
+## VRAM ranges
+
+`--min-vram` filters by per-GPU VRAM. Values available across providers:
+
+| VRAM | GPUs | Providers |
+|-----:|------|-----------|
+| 16 GB | RTX 2000 Ada, RTX A4000 | RunPod |
+| 20 GB | RTX 4000 Ada, RTX A4500 | RunPod, Linode, DigitalOcean |
+| 24 GB | RTX 3090, RTX 4090, L4, RTX A5000 | RunPod |
+| 32 GB | RTX 5090, RTX PRO 4500 | RunPod |
+| 48 GB | A40, L40S, RTX 6000 Ada, RTX A6000 | RunPod, Linode, DigitalOcean |
+| 80 GB | A100 PCIe/SXM, H100 SXM/PCIe | RunPod, DigitalOcean |
+| 94 GB | H100 NVL | RunPod |
+| 96 GB | RTX PRO 6000 | RunPod |
+| 141 GB | H200 SXM | RunPod, DigitalOcean |
+| 180 GB | B200 | RunPod |
+| 192 GB | MI300X | DigitalOcean |
+| 288 GB | B300 | RunPod |
 
 ## Output
 

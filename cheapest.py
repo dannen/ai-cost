@@ -11,9 +11,25 @@ Usage:
     python cheapest.py --provider linode
     python cheapest.py --provider digitalocean
     python cheapest.py --spot                   # RunPod: rank by spot price
+    python cheapest.py --min-vram 48            # only GPUs with >= 48 GB VRAM
+
+VRAM ranges available across providers (per GPU):
+    16 GB  — RTX 2000 Ada, RTX A4000                        (RunPod)
+    20 GB  — RTX 4000 Ada, RTX A4500                        (RunPod, Linode, DigitalOcean)
+    24 GB  — RTX 3090, RTX 4090, L4, RTX A5000              (RunPod)
+    32 GB  — RTX 5090, RTX PRO 4500                         (RunPod)
+    48 GB  — A40, L40S, RTX 6000 Ada, RTX A6000             (RunPod, Linode, DigitalOcean)
+    80 GB  — A100 PCIe/SXM, H100 SXM/PCIe                  (RunPod, DigitalOcean)
+    94 GB  — H100 NVL                                       (RunPod)
+    96 GB  — RTX PRO 6000                                   (RunPod)
+   141 GB  — H200 SXM                                       (RunPod, DigitalOcean)
+   180 GB  — B200                                           (RunPod)
+   192 GB  — MI300X                                         (DigitalOcean)
+   288 GB  — B300                                           (RunPod)
 """
 
 import os
+import re
 import sys
 import json
 import argparse
@@ -151,11 +167,14 @@ def _runpod_stock_map(datacenters):
     return stock
 
 
-def _runpod_rank(gpu_types, stock_map, top_n, use_spot):
+def _runpod_rank(gpu_types, stock_map, top_n, use_spot, min_vram):
     candidates = []
     for gid, gpu in gpu_types.items():
         locs = stock_map.get(gid)
         if not locs:
+            continue
+        vram = gpu.get("memoryInGb", 0)
+        if min_vram and vram < min_vram:
             continue
         lp = gpu.get("lowestPrice") or {}
         secure = gpu.get("securePrice")
@@ -172,7 +191,7 @@ def _runpod_rank(gpu_types, stock_map, top_n, use_spot):
         best_stock = min(locs, key=lambda x: _RUNPOD_STOCK_RANK.get(x[2], 99))[2]
         candidates.append({
             "name": gpu["displayName"],
-            "vram": gpu.get("memoryInGb", 0),
+            "vram": vram,
             "secure": secure,
             "community": community,
             "ondemand": cheapest,
@@ -185,7 +204,7 @@ def _runpod_rank(gpu_types, stock_map, top_n, use_spot):
     return candidates[:top_n]
 
 
-def fetch_runpod(top_n, use_spot):
+def fetch_runpod(top_n, use_spot, min_vram):
     api_key = get_runpod_key()
     if not api_key:
         return None, "no API key — set RUNPOD_API_KEY or write to ~/.api/runpod/claude.key"
@@ -196,13 +215,26 @@ def fetch_runpod(top_n, use_spot):
     gpu_types = {g["id"]: g for g in data["gpuTypes"]}
     stock_map = _runpod_stock_map(data["dataCenters"])
     n_available = sum(1 for g in gpu_types if g in stock_map)
-    ranked = _runpod_rank(gpu_types, stock_map, top_n, use_spot)
+    ranked = _runpod_rank(gpu_types, stock_map, top_n, use_spot, min_vram)
     return {"ranked": ranked, "n_available": n_available}, None
 
 
 # ── Linode ────────────────────────────────────────────────────────────────────
 
 _LINODE_API = "https://api.linode.com/v4"
+
+# Linode doesn't expose per-GPU VRAM in the API; map by instance type prefix.
+_LINODE_VRAM = {
+    "g2-gpu-rtx4000a": 20,   # RTX 4000 Ada — 20 GB per GPU
+    "g1-gpu-rtx6000":  48,   # RTX 6000 Ada — 48 GB per GPU
+}
+
+
+def _linode_vram(type_id):
+    for prefix, vram in _LINODE_VRAM.items():
+        if type_id.startswith(prefix):
+            return vram
+    return 0
 
 
 def _linode_fetch(token):
@@ -213,7 +245,7 @@ def _linode_fetch(token):
     return data.get("data", [])
 
 
-def fetch_linode(top_n):
+def fetch_linode(top_n, min_vram):
     token = get_linode_token()
     if not token:
         return None, "no token — set LINODE_TOKEN or write to ~/.api/linode/token"
@@ -222,6 +254,8 @@ def fetch_linode(top_n):
     except Exception as e:
         return None, str(e)
     gpu_types = [t for t in all_types if t.get("class") == "gpu"]
+    if min_vram:
+        gpu_types = [t for t in gpu_types if _linode_vram(t.get("id", "")) >= min_vram]
     gpu_types.sort(key=lambda t: t.get("price", {}).get("hourly") or 0)
     ranked = []
     for t in gpu_types[:top_n]:
@@ -230,6 +264,7 @@ def fetch_linode(top_n):
             "id": t.get("id", ""),
             "label": t.get("label", ""),
             "vcpus": t.get("vcpus", 0),
+            "vram": _linode_vram(t.get("id", "")),
             "ram_gb": t.get("memory", 0) / 1024,
             "disk_gb": t.get("disk", 0) / 1024,
             "hourly": price.get("hourly") or 0,
@@ -241,6 +276,15 @@ def fetch_linode(top_n):
 # ── DigitalOcean ──────────────────────────────────────────────────────────────
 
 _DO_API = "https://api.digitalocean.com/v2"
+
+
+def _do_vram_per_gpu(slug):
+    """Parse per-GPU VRAM from slug like 'gpu-h100x8-640gb' → 80."""
+    m = re.search(r'x(\d+)-(\d+)gb', slug)
+    if m:
+        count, total = int(m.group(1)), int(m.group(2))
+        return total // count if count else 0
+    return 0
 
 
 def _do_paginate(token, path, key):
@@ -257,7 +301,7 @@ def _do_paginate(token, path, key):
     return results
 
 
-def fetch_digitalocean(top_n):
+def fetch_digitalocean(top_n, min_vram):
     token = get_do_token()
     if not token:
         return None, "no token — set DIGITALOCEAN_TOKEN or write to ~/.api/digitalocean/token"
@@ -266,6 +310,8 @@ def fetch_digitalocean(top_n):
     except Exception as e:
         return None, str(e)
     gpu_sizes = [s for s in all_sizes if s.get("slug", "").startswith("gpu-")]
+    if min_vram:
+        gpu_sizes = [s for s in gpu_sizes if _do_vram_per_gpu(s.get("slug", "")) >= min_vram]
     gpu_sizes.sort(key=lambda s: s.get("price_hourly") or 0)
     ranked = []
     for s in gpu_sizes[:top_n]:
@@ -273,6 +319,7 @@ def fetch_digitalocean(top_n):
             "slug": s.get("slug", ""),
             "description": s.get("description", ""),
             "vcpus": s.get("vcpus", 0),
+            "vram": _do_vram_per_gpu(s.get("slug", "")),
             "ram_gb": s.get("memory", 0) / 1024,
             "disk_gb": s.get("disk", 0),
             "hourly": s.get("price_hourly") or 0,
@@ -323,13 +370,14 @@ def print_linode(data):
     ranked = data["ranked"]
     n = data["n_available"]
     print(f"\n  Linode  ({n} GPU instance types, ranked by $/hr)")
-    w = 86
+    w = 92
     print(f"  {'─' * w}")
-    print(f"  {'#':>2}  {'Instance Type':<28} {'vCPUs':>5} {'RAM':>7} {'Disk':>7}  {'$/hr':>8}  {'$/mo':>10}  Label")
+    print(f"  {'#':>2}  {'Instance Type':<28} {'vCPUs':>5} {'VRAM':>5} {'RAM':>7} {'Disk':>7}  {'$/hr':>8}  {'$/mo':>10}  Label")
     print(f"  {'─' * w}")
     for i, r in enumerate(ranked, 1):
+        vram_str = f"{r['vram']}GB" if r["vram"] else "  ?"
         print(
-            f"  {i:>2}  {r['id']:<28} {r['vcpus']:>5} {r['ram_gb']:>6.0f}GB {r['disk_gb']:>6.0f}GB"
+            f"  {i:>2}  {r['id']:<28} {r['vcpus']:>5} {vram_str:>5} {r['ram_gb']:>6.0f}GB {r['disk_gb']:>6.0f}GB"
             f"  {r['hourly']:>8.4f}  {r['monthly']:>10.2f}  {r['label']}"
         )
 
@@ -338,13 +386,14 @@ def print_digitalocean(data):
     ranked = data["ranked"]
     n = data["n_available"]
     print(f"\n  DigitalOcean  ({n} GPU Droplet sizes, ranked by $/hr)")
-    w = 90
+    w = 96
     print(f"  {'─' * w}")
-    print(f"  {'#':>2}  {'Slug':<26} {'vCPUs':>5} {'RAM':>7} {'Disk':>7}  {'$/hr':>8}  {'$/mo':>10}  Description")
+    print(f"  {'#':>2}  {'Slug':<26} {'vCPUs':>5} {'VRAM':>5} {'RAM':>7} {'Disk':>7}  {'$/hr':>8}  {'$/mo':>10}  Description")
     print(f"  {'─' * w}")
     for i, r in enumerate(ranked, 1):
+        vram_str = f"{r['vram']}GB" if r["vram"] else "  ?"
         print(
-            f"  {i:>2}  {r['slug']:<26} {r['vcpus']:>5} {r['ram_gb']:>6.0f}GB {r['disk_gb']:>6}GB"
+            f"  {i:>2}  {r['slug']:<26} {r['vcpus']:>5} {vram_str:>5} {r['ram_gb']:>6.0f}GB {r['disk_gb']:>6}GB"
             f"  {r['hourly']:>8.4f}  {r['monthly']:>10.2f}  {r['description']}"
         )
 
@@ -366,12 +415,16 @@ def main():
                         help="Which provider(s) to query (default: all)")
     parser.add_argument("--spot", action="store_true",
                         help="RunPod: rank by spot/interruptable price instead of on-demand")
+    parser.add_argument("--min-vram", type=int, default=0, metavar="GB",
+                        help="Only show GPUs with at least this much VRAM per GPU in GB "
+                             "(e.g. --min-vram 48). Common values: 16, 20, 24, 32, 48, 80, 141, 192")
     args = parser.parse_args()
 
     want = set(PROVIDERS) if args.provider == "all" else {args.provider}
 
+    vram_note = f", VRAM >= {args.min_vram} GB" if args.min_vram else ""
     print(f"\n{'═' * W}")
-    print(f"  AI GPU Cost — {args.top} Cheapest per Provider")
+    print(f"  AI GPU Cost — {args.top} Cheapest per Provider{vram_note}")
     print(f"  {datetime.now().strftime('%Y-%m-%d %H:%M')}")
     print(f"{'═' * W}")
 
@@ -379,7 +432,7 @@ def main():
 
     if "runpod" in want:
         print("Querying RunPod ...", end=" ", flush=True)
-        data, err = fetch_runpod(args.top, args.spot)
+        data, err = fetch_runpod(args.top, args.spot, args.min_vram)
         if err:
             print(f"skipped ({err})")
         else:
@@ -389,7 +442,7 @@ def main():
 
     if "linode" in want:
         print("Querying Linode ...", end=" ", flush=True)
-        data, err = fetch_linode(args.top)
+        data, err = fetch_linode(args.top, args.min_vram)
         if err:
             print(f"skipped ({err})")
         else:
@@ -399,7 +452,7 @@ def main():
 
     if "digitalocean" in want:
         print("Querying DigitalOcean ...", end=" ", flush=True)
-        data, err = fetch_digitalocean(args.top)
+        data, err = fetch_digitalocean(args.top, args.min_vram)
         if err:
             print(f"skipped ({err})")
         else:
