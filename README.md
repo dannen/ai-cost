@@ -2,12 +2,12 @@
 
 CLI tool that queries multiple cloud GPU providers and shows the cheapest currently-available options.
 
-**Providers:** RunPod · Linode · DigitalOcean
+**Providers:** RunPod · Linode · DigitalOcean · Vast.ai
 
 ## Requirements
 
 - Python 3.8+ (stdlib only, no dependencies)
-- API key/token for each provider you want to query
+- API key/token for each provider you want to query (Vast.ai's search needs none)
 
 ## API key setup
 
@@ -59,6 +59,10 @@ chmod 600 ~/.api/digitalocean/token
 
 Also supports `DO_TOKEN` env var or `~/.config/doctl/config.yaml` (doctl config).
 
+### Vast.ai
+
+No key needed: the offer search is public.
+
 ## Usage
 
 ```bash
@@ -67,31 +71,40 @@ python cheapest.py --top 10                 # show more results
 python cheapest.py --provider runpod        # single provider
 python cheapest.py --provider linode
 python cheapest.py --provider digitalocean
+python cheapest.py --provider vast
 python cheapest.py --spot                   # RunPod: rank by spot price
 python cheapest.py --min-vram 48            # only GPUs with >= 48 GB VRAM per GPU
 python cheapest.py --min-vram 80 --top 10
+python cheapest.py --provider vast --min-vram 32 --cuda 13.0   # Vast.ai hosts that run CUDA 13
+python cheapest.py --min-vram 32 --max-vram 48                # VRAM range
+python cheapest.py --na                                      # North America only
 ```
 
 Providers with no configured token are skipped with a note rather than erroring.
 
+`--cuda VER` applies to Vast.ai only: it keeps hosts whose driver supports at least that CUDA version (and, for 13.0+, Turing or newer GPUs, since CUDA 13 dropped Volta and older). Linode and DigitalOcean are VMs where you install the driver yourself.
+
+`--na` keeps North America only: RunPod `US-*`/`CA-*` datacenters, DigitalOcean NYC/SFO/TOR/ATL/RIC regions and Vast.ai hosts in the US, Canada or Mexico. Linode isn't filtered, because its API doesn't say which regions have each GPU type.
+
 ## VRAM ranges
 
-`--min-vram` filters by per-GPU VRAM. Values available across providers:
+`--min-vram` / `--max-vram` filter by per-GPU VRAM. Values available across providers:
 
 | VRAM | GPUs | Providers |
 |-----:|------|-----------|
-| 16 GB | RTX 2000 Ada, RTX A4000 | RunPod |
-| 20 GB | RTX 4000 Ada, RTX A4500 | RunPod, Linode, DigitalOcean |
-| 24 GB | RTX 3090, RTX 4090, L4, RTX A5000 | RunPod |
-| 32 GB | RTX 5090, RTX PRO 4500 | RunPod |
-| 48 GB | A40, L40S, RTX 6000 Ada, RTX A6000 | RunPod, Linode, DigitalOcean |
-| 80 GB | A100 PCIe/SXM, H100 SXM/PCIe | RunPod, DigitalOcean |
-| 94 GB | H100 NVL | RunPod |
-| 96 GB | RTX PRO 6000 | RunPod |
-| 141 GB | H200 SXM | RunPod, DigitalOcean |
-| 180 GB | B200 | RunPod |
+| 16 GB | RTX 2000 Ada, RTX A4000 | RunPod, Vast.ai |
+| 20 GB | RTX 4000 Ada, RTX A4500 | RunPod, Linode, DigitalOcean, Vast.ai |
+| 24 GB | RTX 3090, RTX 4090, L4, RTX A5000, Quadro RTX 6000 | RunPod, Linode, Vast.ai |
+| 32 GB | RTX 5090, RTX PRO 4500, RTX 5000 Ada | RunPod, Vast.ai |
+| 40 GB | A100 40GB | RunPod, Vast.ai |
+| 48 GB | A40, L40S, RTX 6000 Ada, RTX A6000, RTX PRO 5000 | RunPod, DigitalOcean, Vast.ai |
+| 80 GB | A100 PCIe/SXM, H100 SXM/PCIe | RunPod, DigitalOcean, Vast.ai |
+| 94 GB | H100 NVL | RunPod, Vast.ai |
+| 96 GB | RTX PRO 6000 | RunPod, Vast.ai |
+| 141 GB | H200 SXM | RunPod, DigitalOcean, Vast.ai |
+| 180 GB | B200 | RunPod, Vast.ai |
 | 192 GB | MI300X | DigitalOcean |
-| 288 GB | B300 | RunPod |
+| 288 GB | B300 | RunPod, Vast.ai |
 
 ## Output
 
@@ -139,3 +152,11 @@ Only RunPod GPUs with at least one datacenter reporting `stockStatus: High/Mediu
 **Linode / DigitalOcean columns:**
 - `$/hr` — on-demand hourly rate
 - `$/mo` — monthly equivalent (as listed by provider)
+
+**Vast.ai columns** (cheapest verified, rentable single-GPU offer per GPU model):
+- `$/hr` — on-demand price including the host's default disk
+- `VRAM` — nominal size (hosts report usable memory, e.g. an L40S shows ~45 GiB)
+- `CUDA` — highest CUDA version the host's driver supports
+- `Reliab` — Vast.ai's host reliability score
+
+Vast.ai machines are peer-hosted: an offer can be rented by someone else at any time.
