@@ -2,7 +2,7 @@
 """
 Find the cheapest currently-available GPU options across cloud providers.
 
-Providers: RunPod, Linode, DigitalOcean, Vast.ai, AWS, GCP
+Providers: RunPod, Linode, DigitalOcean, Vast.ai, AWS, GCP, Runcrate
 
 Usage:
     python cheapest.py                          # all providers, top 5
@@ -13,6 +13,7 @@ Usage:
     python cheapest.py --provider vast
     python cheapest.py --provider aws
     python cheapest.py --provider gcp
+    python cheapest.py --provider runcrate
     python cheapest.py --spot                   # RunPod, AWS, GCP: rank by spot price
     python cheapest.py --min-vram 48            # only GPUs with >= 48 GB VRAM
     python cheapest.py --min-vram 32 --max-vram 48
@@ -649,6 +650,45 @@ def fetch_gcp(top_n, min_vram, max_vram, na_only, use_spot):
     return {"ranked": ranked[:top_n], "n_available": len(ranked)}, None
 
 
+# ── Runcrate ──────────────────────────────────────────────────────────────────
+# Public pricing feed, no key needed: the lowest on-demand $/hr per GPU type and
+# the regions it is sold in. The price is the lowest across regions, so --na
+# can't filter it.
+
+_RUNCRATE_API = "https://www.runcrate.ai/api/gpu-pricing"
+# The feed doesn't say whether an H100 or A100 is SXM or PCIe, so those two are left out.
+_RUNCRATE_SKIP = ("h100", "a100")
+
+
+def fetch_runcrate(top_n, min_vram, max_vram):
+    try:
+        data = http_get(_RUNCRATE_API, {"Accept": "application/json", "User-Agent": "ai-cost/1.0"})
+    except Exception as e:
+        return None, str(e)
+    ranked = []
+    for g in data.get("gpus", []):
+        price = g.get("min_price_hr")
+        if not isinstance(price, (int, float)) or price <= 0:
+            continue
+        if (g.get("available_options") or 0) < 1:
+            continue
+        if str(g.get("gpu_type", "")).lower().startswith(_RUNCRATE_SKIP):
+            continue
+        m = re.match(r"\s*(\d+)\s*GB", str(g.get("vram") or ""), re.I)
+        vram = int(m.group(1)) if m else 0
+        if (min_vram or max_vram) and not _vram_ok(vram, min_vram, max_vram):
+            continue
+        ranked.append({
+            "name": g.get("name") or g.get("gpu_type", ""),
+            "vram": vram,
+            "hourly": price,
+            "options": g.get("available_options"),
+            "regions": g.get("regions") or [],
+        })
+    ranked.sort(key=lambda r: r["hourly"])
+    return {"ranked": ranked[:top_n], "n_available": len(ranked)}, None
+
+
 # ── Output ────────────────────────────────────────────────────────────────────
 
 W = 90
@@ -756,9 +796,27 @@ def print_cloud(title, unit, data, use_spot):
     print(f"  Spot N/A = not in the public spot feed (may still be offered)  |  GPU quota not checked")
 
 
+def print_runcrate(data):
+    ranked = data["ranked"]
+    n = data["n_available"]
+    print(f"\n  Runcrate  ({n} GPU types in stock, ranked by on-demand $/hr)")
+    w = 86
+    print(f"  {'─' * w}")
+    print(f"  {'#':>2}  {'GPU':<26} {'VRAM':>5}  {'$/hr':>8}  {'Options':>7}  Regions")
+    print(f"  {'─' * w}")
+    for i, r in enumerate(ranked, 1):
+        vram_str = f"{r['vram']}GB" if r["vram"] else "  ?"
+        print(
+            f"  {i:>2}  {r['name']:<26} {vram_str:>5}  {r['hourly']:>8.4f}  {r['options']:>7}"
+            f"  {_loc_str(r['regions'], max_show=2)}"
+        )
+    print(f"\n  $/hr = lowest on-demand price across regions  |  Options = purchasable configurations in stock")
+    print(f"  H100 and A100 are not listed: the feed doesn't say SXM or PCIe")
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
-PROVIDERS = ["runpod", "linode", "digitalocean", "vast", "aws", "gcp"]
+PROVIDERS = ["runpod", "linode", "digitalocean", "vast", "aws", "gcp", "runcrate"]
 
 
 def main():
@@ -869,6 +927,18 @@ def main():
         else:
             print("done.")
             print_cloud("GCP", "machine", data, args.spot)
+            any_results = True
+
+    if "runcrate" in want:
+        print("Querying Runcrate ...", end=" ", flush=True)
+        data, err = fetch_runcrate(args.top, args.min_vram, args.max_vram)
+        if err:
+            print(f"skipped ({err})")
+        else:
+            print("done.")
+            print_runcrate(data)
+            if args.na:
+                print("  (--na not applied: Runcrate's price is the lowest across all its regions)")
             any_results = True
 
     if not any_results:

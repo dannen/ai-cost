@@ -2,12 +2,12 @@
 
 CLI tool that queries multiple cloud GPU providers and shows the cheapest currently-available options.
 
-**Providers:** RunPod · Linode · DigitalOcean · Vast.ai · AWS · GCP
+**Providers:** RunPod · Linode · DigitalOcean · Vast.ai · AWS · GCP · Runcrate
 
 ## Requirements
 
 - Python 3.8+ (stdlib only, no dependencies)
-- API key/token for each provider you want to query (Vast.ai's search needs none)
+- API key/token for each provider you want to query (Vast.ai's search and Runcrate's pricing feed need none)
 
 ## API key setup
 
@@ -88,6 +88,7 @@ python cheapest.py --provider digitalocean
 python cheapest.py --provider vast
 python cheapest.py --provider aws
 python cheapest.py --provider gcp
+python cheapest.py --provider runcrate
 python cheapest.py --spot                   # RunPod, AWS, GCP: rank by spot price
 python cheapest.py --min-vram 48            # only GPUs with >= 48 GB VRAM per GPU
 python cheapest.py --min-vram 80 --top 10
@@ -100,7 +101,7 @@ Providers with no configured token are skipped with a note rather than erroring.
 
 `--cuda VER` applies to Vast.ai only: it keeps hosts whose driver supports at least that CUDA version (and, for 13.0+, Turing or newer GPUs, since CUDA 13 dropped Volta and older). Linode and DigitalOcean are VMs where you install the driver yourself.
 
-`--na` keeps North America only: RunPod `US-*`/`CA-*` datacenters, DigitalOcean NYC/SFO/TOR/ATL/RIC/MEM/MKC regions, Vast.ai hosts in the US, Canada or Mexico, AWS `us-`/`ca-`/`mx-` regions and GCP `us-`/`northamerica-` regions. Linode isn't filtered, because its API doesn't say which regions have each GPU type.
+`--na` keeps North America only: RunPod `US-*`/`CA-*` datacenters, DigitalOcean NYC/SFO/TOR/ATL/RIC/MEM/MKC regions, Vast.ai hosts in the US, Canada or Mexico, AWS `us-`/`ca-`/`mx-` regions and GCP `us-`/`northamerica-` regions. Linode isn't filtered, because its API doesn't say which regions have each GPU type. Runcrate isn't filtered either: its public feed gives one lowest price per GPU type across all regions.
 
 ## VRAM ranges
 
@@ -177,6 +178,13 @@ Only RunPod GPUs with at least one datacenter reporting `stockStatus: High/Mediu
 - `Reliab` — Vast.ai's host reliability score
 
 Vast.ai machines are peer-hosted: an offer can be rented by someone else at any time.
+
+**Runcrate columns** (an AI cloud; public feed, no key):
+- `$/hr` — lowest on-demand price per GPU across the regions where it is sold
+- `Options` — purchasable configurations currently in stock; GPU types with none are hidden
+- `Regions` — where those configurations are
+
+H100 and A100 are not shown for Runcrate because the feed doesn't say whether a board is SXM or PCIe.
 
 **AWS / GCP columns** (cheapest instance or machine type per GPU):
 - `On-dem` / `Spot` — $/hr for the whole VM (GCP adds the machine's vCPU and RAM to the GPU price)
